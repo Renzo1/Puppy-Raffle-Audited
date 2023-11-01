@@ -5,22 +5,33 @@ pragma experimental ABIEncoderV2;
 import {Test, console} from "forge-std/Test.sol";
 import {PuppyRaffle} from "../src/PuppyRaffle.sol";
 
+// import {HarnessContract} from "../test/harness/HarnessContract.sol";
+
 contract PuppyRaffleTest is Test {
     PuppyRaffle puppyRaffle;
-    uint256 entranceFee = 1e18;
+    // HarnessContract harness;
+    uint256 entranceFee = 1 wei; // fuzz with random entrance fee
     address playerOne = address(1);
     address playerTwo = address(2);
     address playerThree = address(3);
     address playerFour = address(4);
     address feeAddress = address(99);
+
+    // fuzz with random and unexpected addresses
+    address puppyRaffleAddress;
+    address zeroAddress = address(0);
+    address owner = address(this);
+
     uint256 duration = 1 days;
 
+    event RaffleEnter(address[] newPlayers);
+    event RaffleRefunded(address player);
+
     function setUp() public {
-        puppyRaffle = new PuppyRaffle(
-            entranceFee,
-            feeAddress,
-            duration
-        );
+        puppyRaffle = new PuppyRaffle(entranceFee, feeAddress, duration);
+        // harness = new HarnessContract(puppyRaffle);
+
+        puppyRaffleAddress = address(puppyRaffle);
     }
 
     //////////////////////
@@ -75,9 +86,37 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.enterRaffle{value: entranceFee * 3}(players);
     }
 
+    //////////////// Auditor's Test //////////////
+    // forge test --match-test "testCantEnterWithDuplicatePlayerstwo" -vvv
+    function testCantEnterWithDuplicatePlayerstwo() public {
+        address[] memory players = new address[](1);
+        address[] memory players2 = new address[](1);
+        players[0] = playerOne;
+        players2[0] = playerOne;
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+        vm.expectRevert("PuppyRaffle: Duplicate player");
+        puppyRaffle.enterRaffle{value: entranceFee}(players2);
+    }
+
+    function testCantEnterWithMoreThanEntranceFee() public {
+        address[] memory players = new address[](1);
+        players[0] = playerOne;
+        vm.expectRevert("PuppyRaffle: Must send enough to enter raffle");
+        puppyRaffle.enterRaffle{value: entranceFee + 10}(players);
+    }
+
+    /**
+    function testDoSVulnerability() public {
+        address[] memory players;
+        vm.expectRevert("PuppyRaffle: Must send enough to enter raffle");
+        puppyRaffle.enterRaffle(players);
+    }
+
+    */
+
     //////////////////////
     /// Refund         ///
-    /////////////////////
+    //////////////////////
     modifier playerEntered() {
         address[] memory players = new address[](1);
         players[0] = playerOne;
@@ -111,9 +150,60 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.refund(indexOfPlayer);
     }
 
-    //////////////////////
-    /// getActivePlayerIndex         ///
-    /////////////////////
+    function testEnterRaffleAndRefundAfterRaffleDuration()
+        public
+        playersEntered
+    {
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+        ///@notice At this point the raffle is over, but a winner hasn't been selected yet
+
+        address[] memory players = new address[](1);
+        address playerFive = address(5);
+        players[0] = playerFive;
+
+        ///@notice One new players are entered
+        vm.expectEmit(true, false, false, false);
+        emit RaffleEnter(players);
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+
+        ///@notice The winner is selected
+        vm.prank(playerFive);
+        vm.expectEmit(true, false, false, false);
+        emit RaffleRefunded(playerFive);
+        puppyRaffle.refund(4);
+    }
+
+    // forge test --match-test "testOnlyPlayerCanRefundThemself" -vvv
+    //////////////// Auditor's Test //////////////
+    /*
+    /// @notice This test failed invalidating my assumption that the the sendValue will fail silently
+
+    function testPlayerCanLossRefund() public playerEntered {
+        uint256 balanceBefore = address(playerOne).balance;
+        // uint256 raffleInitialBalance = address(puppyRaffle).balance;
+        puppyRaffle.resetBalance();
+
+        uint256 indexOfPlayer = puppyRaffle.getActivePlayerIndex(playerOne);
+
+        // And Player is active
+        vm.prank(playerOne);
+        assertEq(puppyRaffle._isActivePlayer(), true);
+
+        vm.prank(playerOne);
+        puppyRaffle.refund(indexOfPlayer);
+
+        // No difference in balance after refund, thus refunds
+        assertEq(address(playerOne).balance, balanceBefore);
+
+        // And Player is no longer active
+        assertEq(puppyRaffle._isActivePlayer(), false);
+    }
+    */
+
+    /////////////////////////////
+    /// getActivePlayerIndex  ///
+    /////////////////////////////
     function testGetActivePlayerIndexManyPlayers() public {
         address[] memory players = new address[](2);
         players[0] = playerOne;
@@ -124,8 +214,32 @@ contract PuppyRaffleTest is Test {
         assertEq(puppyRaffle.getActivePlayerIndex(playerTwo), 1);
     }
 
+    //////////////// Auditor's Test //////////////
+    // forge test --match-test "testReturnZeroForNonActivePlayer" -vvv
+    function testReturnZeroForNonActivePlayer() public {
+        address[] memory players = new address[](2);
+        players[0] = playerOne;
+        players[1] = playerTwo;
+        puppyRaffle.enterRaffle{value: entranceFee * 2}(players);
+
+        assertEq(puppyRaffle.getActivePlayerIndex(playerThree), 0);
+    }
+
+    function testReturnZeroForNonActivePlayerAndActivePlayers() public {
+        address[] memory players = new address[](2);
+        players[0] = playerOne;
+        players[1] = playerTwo;
+        puppyRaffle.enterRaffle{value: entranceFee * 2}(players);
+
+        /// @notice playerThree is not active, and return 0
+        assertEq(puppyRaffle.getActivePlayerIndex(playerThree), 0);
+
+        /// @notice playerOne is active, and return 0
+        assertEq(puppyRaffle.getActivePlayerIndex(playerOne), 0);
+    }
+
     //////////////////////
-    /// selectWinner         ///
+    /// selectWinner   ///
     /////////////////////
     modifier playersEntered() {
         address[] memory players = new address[](4);
@@ -156,6 +270,7 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.selectWinner();
     }
 
+    /// Use this to prove winner predictability
     function testSelectWinner() public playersEntered {
         vm.warp(block.timestamp + duration + 1);
         vm.roll(block.number + 1);
@@ -170,7 +285,7 @@ contract PuppyRaffleTest is Test {
         vm.warp(block.timestamp + duration + 1);
         vm.roll(block.number + 1);
 
-        uint256 expectedPayout = ((entranceFee * 4) * 80 / 100);
+        uint256 expectedPayout = (((entranceFee * 4) * 80) / 100);
 
         puppyRaffle.selectWinner();
         assertEq(address(playerFour).balance, balanceBefore + expectedPayout);
@@ -184,19 +299,49 @@ contract PuppyRaffleTest is Test {
         assertEq(puppyRaffle.balanceOf(playerFour), 1);
     }
 
+    /// Use this to prove puppy predictability
     function testPuppyUriIsRight() public playersEntered {
         vm.warp(block.timestamp + duration + 1);
         vm.roll(block.number + 1);
 
-        string memory expectedTokenUri =
-            "data:application/json;base64,eyJuYW1lIjoiUHVwcHkgUmFmZmxlIiwgImRlc2NyaXB0aW9uIjoiQW4gYWRvcmFibGUgcHVwcHkhIiwgImF0dHJpYnV0ZXMiOiBbeyJ0cmFpdF90eXBlIjogInJhcml0eSIsICJ2YWx1ZSI6IGNvbW1vbn1dLCAiaW1hZ2UiOiJpcGZzOi8vUW1Tc1lSeDNMcERBYjFHWlFtN3paMUF1SFpqZmJQa0Q2SjdzOXI0MXh1MW1mOCJ9";
+        string
+            memory expectedTokenUri = "data:application/json;base64,eyJuYW1lIjoiUHVwcHkgUmFmZmxlIiwgImRlc2NyaXB0aW9uIjoiQW4gYWRvcmFibGUgcHVwcHkhIiwgImF0dHJpYnV0ZXMiOiBbeyJ0cmFpdF90eXBlIjogInJhcml0eSIsICJ2YWx1ZSI6IGNvbW1vbn1dLCAiaW1hZ2UiOiJpcGZzOi8vUW1Tc1lSeDNMcERBYjFHWlFtN3paMUF1SFpqZmJQa0Q2SjdzOXI0MXh1MW1mOCJ9";
 
         puppyRaffle.selectWinner();
         assertEq(puppyRaffle.tokenURI(0), expectedTokenUri);
     }
 
+    //////////////// Auditor's Test //////////////
+    // forge test --match-test "testPlayersArrayIsEmptyAfterWinnerSelection" -vvv
+
+    function testPlayersArrayIsEmptyAfterWinnerSelection()
+        public
+        playersEntered
+    {
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+
+        puppyRaffle.selectWinner();
+        assertEq(puppyRaffle.getPlayersLength(), 0);
+    }
+
+    function testWinnerLossesSomeFunds() public playersEntered {
+        uint256 balanceBefore = address(playerFour).balance;
+
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+
+        uint256 expectedPayout = (((entranceFee * 4) * 80) / 100);
+        /// @notice Actual result is (((1 wei * 4) * 80) / 100) == 3.2
+        /// @notice But solidity returns 3
+
+        puppyRaffle.selectWinner();
+        assertEq(address(playerFour).balance, balanceBefore + expectedPayout);
+        assertEq(address(playerFour).balance, balanceBefore + 3);
+    }
+
     //////////////////////
-    /// withdrawFees         ///
+    /// withdrawFees     ///
     /////////////////////
     function testCantWithdrawFeesIfPlayersActive() public playersEntered {
         vm.expectRevert("PuppyRaffle: There are currently players active!");
@@ -212,5 +357,27 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.selectWinner();
         puppyRaffle.withdrawFees();
         assertEq(address(feeAddress).balance, expectedPrizeAmount);
+    }
+
+    function testAccountLogic() public playersEntered {
+        /// @notice playerOne gets refund
+        vm.prank(playerOne);
+        puppyRaffle.refund(0);
+
+        /// @notice playerTwo gets refund
+        vm.prank(playerTwo);
+        puppyRaffle.refund(1);
+
+        /// @notice playerThree gets refund
+        vm.prank(playerThree);
+        puppyRaffle.refund(2);
+
+        /// @notice raffle ends and winner is selected
+        vm.prank(address(this));
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+
+        vm.expectRevert("PuppyRaffle: Failed to send prize pool to winner");
+        puppyRaffle.selectWinner();
     }
 }
